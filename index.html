@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bloom Calendar</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-card">
+          <div class="brand-mark">BC</div>
+          <div>
+            <p class="eyebrow">Always-on Planner</p>
+            <h1>Bloom Calendar</h1>
+          </div>
+        </div>
+
+        <section class="panel clock-panel">
+          <div class="panel-header">
+            <h2>現在時刻</h2>
+          </div>
+          <p id="currentDateLabel" class="date-label"></p>
+          <p id="currentTimeLabel" class="time-label"></p>
+          <p id="currentStatusLabel" class="muted"></p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>報酬</h2>
+          </div>
+          <label class="field compact-field">
+            <span>計算方法</span>
+            <select id="rewardModeSelect">
+              <option value="hourly">① 時給</option>
+              <option value="daily">② 日給</option>
+              <option value="project">③ 一案件単価</option>
+            </select>
+          </label>
+          <label class="field compact-field" id="rewardRateField">
+            <span id="rewardRateLabel">時給</span>
+            <input id="rewardRateInput" type="number" min="0" step="100" />
+          </label>
+          <p id="rewardAmountLabel" class="time-label"></p>
+          <p id="rewardFormulaLabel" class="muted"></p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>今日の予定</h2>
+            <button id="addTodayEventButton" class="ghost-button">追加</button>
+          </div>
+          <div id="todayEventsList" class="stack-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>次の予定</h2>
+          </div>
+          <div id="nextEventCard" class="next-event-card empty-state">
+            予定はありません
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>フィルター</h2>
+          </div>
+          <label class="field">
+            <span>検索</span>
+            <input id="searchInput" type="search" placeholder="タイトル・場所・備考" />
+          </label>
+          <label class="checkbox-row">
+            <input id="importantOnlyToggle" type="checkbox" />
+            <span>重要予定のみ</span>
+          </label>
+          <div>
+            <p class="field-label">カテゴリ</p>
+            <div id="categoryFilterList" class="chip-list"></div>
+          </div>
+        </section>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="nav-group">
+            <button id="prevButton" class="icon-button" aria-label="前へ">‹</button>
+            <button id="todayButton" class="secondary-button">今日</button>
+            <button id="nextButton" class="icon-button" aria-label="次へ">›</button>
+            <div>
+              <p class="eyebrow">Calendar</p>
+              <h2 id="currentRangeLabel">2026年5月</h2>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <div class="view-switch" role="tablist" aria-label="表示切替">
+              <button class="view-button active" data-view="day">日</button>
+              <button class="view-button" data-view="week">週</button>
+              <button class="view-button" data-view="month">月</button>
+              <button class="view-button" data-view="year">年</button>
+            </div>
+            <button id="openCategoryManagerButton" class="secondary-button">カテゴリ</button>
+            <button id="exportButton" class="secondary-button">バックアップ</button>
+            <button id="newEventButton" class="primary-button">予定を追加</button>
+          </div>
+        </header>
+
+        <section class="board">
+          <div id="monthView" class="view-panel"></div>
+          <div id="weekView" class="view-panel hidden"></div>
+          <div id="dayView" class="view-panel hidden"></div>
+          <div id="yearView" class="view-panel hidden"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="eventModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card large">
+        <div class="modal-header">
+          <h3 id="eventModalTitle">予定を追加</h3>
+          <button class="icon-button modal-close" data-close-modal="eventModal">×</button>
+        </div>
+        <form id="eventForm" class="form-grid">
+          <input type="hidden" id="eventId" />
+          <label class="field field-span-2">
+            <span>過去の予定からコピー</span>
+            <select id="eventTemplateSelect">
+              <option value="">選択してください</option>
+            </select>
+          </label>
+          <label class="field field-span-2">
+            <span>タイトル</span>
+            <input id="eventTitle" type="text" required maxlength="200" list="eventTitleSuggestions" />
+          </label>
+          <label class="field">
+            <span>開始日時</span>
+            <input id="eventStart" type="datetime-local" required />
+          </label>
+          <label class="field">
+            <span>終了日時</span>
+            <input id="eventEnd" type="datetime-local" required />
+          </label>
+          <label class="field field-span-2">
+            <span>過去の時間帯から選択</span>
+            <select id="eventTimeTemplateSelect">
+              <option value="">選択してください</option>
+            </select>
+          </label>
+          <label class="checkbox-row field-span-2">
+            <input id="eventAllDay" type="checkbox" />
+            <span>終日予定</span>
+          </label>
+          <label class="field">
+            <span>カテゴリ</span>
+            <select id="eventCategory"></select>
+          </label>
+          <label class="field">
+            <span>重要度</span>
+            <select id="eventPriority">
+              <option value="1">1 - 低</option>
+              <option value="2">2</option>
+              <option value="3" selected>3 - 標準</option>
+              <option value="4">4</option>
+              <option value="5">5 - 高</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>場所</span>
+            <input id="eventLocation" type="text" maxlength="255" list="eventLocationSuggestions" />
+          </label>
+          <label class="field">
+            <span>通知</span>
+            <select id="eventReminder">
+              <option value="">なし</option>
+              <option value="5">5分前</option>
+              <option value="10">10分前</option>
+              <option value="30">30分前</option>
+              <option value="60">1時間前</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>繰り返し</span>
+            <select id="eventRepeat">
+              <option value="none">なし</option>
+              <option value="daily">毎日</option>
+              <option value="weekly">毎週</option>
+              <option value="monthly">毎月</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>完了状態</span>
+            <select id="eventCompleted">
+              <option value="false">未完了</option>
+              <option value="true">完了</option>
+            </select>
+          </label>
+          <label class="field field-span-2">
+            <span>ミーティングURL</span>
+            <input id="eventMeetingUrl" type="url" placeholder="https://meet.google.com/..." />
+          </label>
+          <label class="field field-span-2">
+            <span>備考</span>
+            <textarea id="eventDescription" rows="4"></textarea>
+          </label>
+          <div class="form-actions field-span-2">
+            <button type="button" id="deleteEventButton" class="danger-button hidden">削除</button>
+            <div class="push-right">
+              <button type="button" class="secondary-button" data-close-modal="eventModal">キャンセル</button>
+              <button type="submit" class="primary-button">保存</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="detailsModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>予定詳細</h3>
+          <button class="icon-button modal-close" data-close-modal="detailsModal">×</button>
+        </div>
+        <div id="eventDetailsContent" class="details-content"></div>
+      </div>
+    </div>
+
+    <div id="categoryModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card large">
+        <div class="modal-header">
+          <h3>カテゴリー管理</h3>
+          <button class="icon-button modal-close" data-close-modal="categoryModal">×</button>
+        </div>
+        <div class="category-layout">
+          <div>
+            <div id="categoryList" class="stack-list"></div>
+          </div>
+          <form id="categoryForm" class="form-grid">
+            <input type="hidden" id="categoryId" />
+            <label class="field">
+              <span>カテゴリー名</span>
+              <input id="categoryName" type="text" required maxlength="50" />
+            </label>
+            <label class="field">
+              <span>表示色</span>
+              <input id="categoryColor" type="color" value="#7cc6fe" />
+            </label>
+            <label class="field">
+              <span>アイコン</span>
+              <input id="categoryIcon" type="text" placeholder="briefcase" maxlength="50" />
+            </label>
+            <label class="field">
+              <span>表示順</span>
+              <input id="categorySortOrder" type="number" min="1" value="1" />
+            </label>
+            <label class="field field-span-2">
+              <span>説明</span>
+              <textarea id="categoryDescription" rows="3"></textarea>
+            </label>
+            <div class="form-actions field-span-2">
+              <button type="button" id="deleteCategoryButton" class="danger-button hidden">削除</button>
+              <div class="push-right">
+                <button type="button" id="newCategoryButton" class="secondary-button">新規</button>
+                <button type="submit" class="primary-button">保存</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <template id="hourRowTemplate">
+      <div class="hour-row">
+        <div class="hour-label"></div>
+        <div class="hour-slot"></div>
+      </div>
+    </template>
+
+    <datalist id="eventTitleSuggestions"></datalist>
+    <datalist id="eventLocationSuggestions"></datalist>
+
+    <script src="app.js"></script>
+  </body>
+</html>
