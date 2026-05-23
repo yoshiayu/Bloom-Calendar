@@ -190,9 +190,6 @@ button {
   color: var(--muted);
 }
 
-.compact-field {
-  margin-bottom: 12px;
-}
 
 .field input,
 .field select,

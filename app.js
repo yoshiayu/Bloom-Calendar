@@ -19,8 +19,6 @@ const state = {
   searchText: "",
   importantOnly: false,
   selectedCategoryIds: [],
-  rewardMode: "hourly",
-  rewardRate: 4500,
   categories: [],
   events: [],
 };
@@ -44,9 +42,6 @@ function cacheElements() {
     "currentDateLabel",
     "currentTimeLabel",
     "currentStatusLabel",
-    "rewardModeSelect",
-    "rewardRateInput",
-    "rewardRateLabel",
     "rewardAmountLabel",
     "rewardFormulaLabel",
     "todayEventsList",
@@ -74,6 +69,9 @@ function cacheElements() {
     "eventReminder",
     "eventRepeat",
     "eventCompleted",
+    "eventCompensationType",
+    "eventCompensationRate",
+    "eventCompensationRateLabel",
     "eventMeetingUrl",
     "eventDescription",
     "deleteEventButton",
@@ -127,19 +125,7 @@ function bindEvents() {
     renderAll();
   });
 
-  els.rewardModeSelect.addEventListener("change", (event) => {
-    state.rewardMode = event.target.value;
-    if (state.rewardMode === "hourly" && !state.rewardRate) state.rewardRate = 4500;
-    if (state.rewardMode === "daily" && !state.rewardRate) state.rewardRate = 30000;
-    if (state.rewardMode === "project" && !state.rewardRate) state.rewardRate = 100000;
-    renderAll();
-  });
-
-  els.rewardRateInput.addEventListener("input", (event) => {
-    state.rewardRate = Number(event.target.value || 0);
-    renderRewardPanel();
-    persistState();
-  });
+  els.eventCompensationType.addEventListener("change", syncCompensationFieldState);
 
   els.importantOnlyToggle.addEventListener("change", (event) => {
     state.importantOnly = event.target.checked;
@@ -200,7 +186,9 @@ function seedDemoEvents() {
     },
   ];
   demo.forEach((item) =>
-    state.events.push(createEventRecord({ ...item, isAllDay: false, reminderMinutes: 10, repeat: "none" }))
+    state.events.push(
+      createEventRecord({ ...item, isAllDay: false, reminderMinutes: 10, repeat: "none", compensationType: "none" })
+    )
   );
   persistState();
 }
@@ -215,11 +203,9 @@ function loadState() {
     }
     const saved = JSON.parse(raw);
     state.categories = saved.categories || DEFAULT_CATEGORIES.map((item) => createCategoryRecord(...item));
-    state.events = saved.events || [];
+    state.events = (saved.events || []).map(normalizeEventRecord);
     state.view = saved.view || "month";
     state.currentDate = saved.currentDate ? new Date(saved.currentDate) : startOfDay(new Date());
-    state.rewardMode = saved.rewardMode || "hourly";
-    state.rewardRate = Number(saved.rewardRate ?? 4500);
   } catch (_error) {
     state.categories = DEFAULT_CATEGORIES.map((item) => createCategoryRecord(...item));
     state.events = [];
@@ -241,8 +227,6 @@ function persistState() {
       events: state.events,
       view: state.view,
       currentDate: state.currentDate.toISOString(),
-      rewardMode: state.rewardMode,
-      rewardRate: state.rewardRate,
     })
   );
 }
@@ -636,41 +620,28 @@ function renderTodayPanel() {
 }
 
 function renderRewardPanel() {
-  const monthMinutes = totalMonthMinutes();
-  const monthDates = getDatesInCurrentMonth();
-  const workedDays = monthDates.filter((date) => getDailyMinutes(date) > 0).length;
-  const monthEvents = filteredEventsForMonth();
+  const monthEvents = eventsForCurrentMonth(state.events);
+  const totalHours = totalMonthMinutes() / 60;
+  const summary = monthEvents.reduce(
+    (acc, event) => {
+      const breakdown = calculateEventCompensation(event, state.currentDate);
+      if (!breakdown.amount) return acc;
+      acc.total += breakdown.amount;
+      if (breakdown.type !== "hourly") {
+        acc[breakdown.type] += breakdown.units;
+      }
+      return acc;
+    },
+    { total: 0, hourly: 0, daily: 0, project: 0 }
+  );
+  summary.hourly = totalHours;
 
-  els.rewardModeSelect.value = state.rewardMode;
-
-  if (state.rewardMode === "hourly") {
-    const hours = monthMinutes / 60;
-    const reward = hours * state.rewardRate * 1.1;
-    els.rewardRateLabel.textContent = "時給";
-    els.rewardRateInput.step = "100";
-    els.rewardRateInput.value = String(state.rewardRate || 0);
-    els.rewardAmountLabel.textContent = formatCurrency(reward);
-    els.rewardFormulaLabel.textContent = `${formatHours(hours)} × ${formatCurrency(state.rewardRate || 0)} × 1.1`;
-    return;
-  }
-
-  if (state.rewardMode === "daily") {
-    const reward = workedDays * state.rewardRate * 1.1;
-    els.rewardRateLabel.textContent = "日給";
-    els.rewardRateInput.step = "1000";
-    els.rewardRateInput.value = String(state.rewardRate || 0);
-    els.rewardAmountLabel.textContent = formatCurrency(reward);
-    els.rewardFormulaLabel.textContent = `${workedDays}日 × ${formatCurrency(state.rewardRate || 0)} × 1.1`;
-    return;
-  }
-
-  const projectCount = countProjectUnits(monthEvents);
-  const reward = projectCount * state.rewardRate;
-  els.rewardRateLabel.textContent = "一案件単価";
-  els.rewardRateInput.step = "1000";
-  els.rewardRateInput.value = String(state.rewardRate || 0);
-  els.rewardAmountLabel.textContent = formatCurrency(reward);
-  els.rewardFormulaLabel.textContent = `${projectCount}案件 × ${formatCurrency(state.rewardRate || 0)}`;
+  els.rewardAmountLabel.textContent = formatCurrency(summary.total);
+  const parts = [];
+  if (summary.hourly > 0) parts.push(`時給 ${formatHours(summary.hourly)}`);
+  if (summary.daily > 0) parts.push(`日給 ${summary.daily}日`);
+  if (summary.project > 0) parts.push(`案件 ${summary.project}件`);
+  els.rewardFormulaLabel.textContent = parts.length > 0 ? `当月合計: ${parts.join(" / ")}` : "報酬対象の予定はありません";
 }
 
 function renderCategoryManager() {
@@ -714,6 +685,8 @@ function handleEventSubmit(event) {
     reminderMinutes: els.eventReminder.value ? Number(els.eventReminder.value) : null,
     repeat: els.eventRepeat.value,
     isCompleted: els.eventCompleted.value === "true",
+    compensationType: els.eventCompensationType.value,
+    compensationRate: Number(els.eventCompensationRate.value || 0),
     meetingUrl: els.eventMeetingUrl.value.trim(),
     description: els.eventDescription.value.trim(),
   };
@@ -826,7 +799,10 @@ function openEventModal(options = {}) {
   els.eventPriority.value = "3";
   els.eventCompleted.value = "false";
   els.eventRepeat.value = "none";
+  els.eventCompensationType.value = "hourly";
+  els.eventCompensationRate.value = "4500";
   els.eventCategory.value = state.categories[0]?.id || "";
+  syncCompensationFieldState();
 
   openModal("eventModal");
 }
@@ -867,6 +843,7 @@ function openDetailsModal(eventId) {
       <div class="detail-stat"><span>場所</span>${escapeHtml(event.location || "未設定")}</div>
       <div class="detail-stat"><span>URL</span>${event.meetingUrl ? escapeHtml(provider.label) : "URL未設定"}</div>
       <div class="detail-stat"><span>状態</span>${event.isCompleted ? "完了" : "未完了"}</div>
+      <div class="detail-stat"><span>報酬</span>${escapeHtml(formatCompensationLabel(event))}</div>
       <div class="detail-stat field-span-2"><span>備考</span>${escapeHtml(event.description || "なし")}</div>
     </div>
     <div class="detail-actions">
@@ -909,8 +886,11 @@ function editEvent(event) {
   els.eventReminder.value = event.reminderMinutes != null ? String(event.reminderMinutes) : "";
   els.eventRepeat.value = event.repeat || "none";
   els.eventCompleted.value = String(Boolean(event.isCompleted));
+  els.eventCompensationType.value = event.compensationType || "none";
+  els.eventCompensationRate.value = event.compensationRate ? String(event.compensationRate) : "";
   els.eventMeetingUrl.value = event.meetingUrl || "";
   els.eventDescription.value = event.description || "";
+  syncCompensationFieldState();
   els.deleteEventButton.classList.remove("hidden");
   openModal("eventModal");
 }
@@ -935,8 +915,11 @@ function applyEventTemplate(template) {
   els.eventReminder.value = template.reminderMinutes != null ? String(template.reminderMinutes) : "";
   els.eventRepeat.value = template.repeat || "none";
   els.eventCompleted.value = "false";
+  els.eventCompensationType.value = template.compensationType || "none";
+  els.eventCompensationRate.value = template.compensationRate ? String(template.compensationRate) : "";
   els.eventMeetingUrl.value = template.meetingUrl || "";
   els.eventDescription.value = template.description || "";
+  syncCompensationFieldState();
 
   if (template.isAllDay) {
     const allDayStart = startOfDay(currentStart);
@@ -1108,7 +1091,6 @@ function calculateFreeSlots(date, events) {
 function totalFreeMinutes(freeSlots) {
   return freeSlots.reduce((sum, slot) => sum + slot.minutes, 0);
 }
-
 function getDailyMinutes(date) {
   const dayEvents = filteredEvents().filter((event) => occursOnDate(event, date));
   if (isWeekdayDayOff(date, dayEvents)) return 0;
@@ -1134,13 +1116,70 @@ function formatCurrency(amount) {
   }).format(Math.round(amount));
 }
 
-function countProjectUnits(events) {
-  const titles = new Set(
-    events
-      .map((event) => (event.title || "").trim())
-      .filter(Boolean)
-  );
-  return titles.size;
+function syncCompensationFieldState() {
+  const type = els.eventCompensationType.value;
+  if (type === "hourly") {
+    els.eventCompensationRateLabel.textContent = "時給";
+    els.eventCompensationRate.step = "100";
+    els.eventCompensationRate.placeholder = "4500";
+    return;
+  }
+  if (type === "daily") {
+    els.eventCompensationRateLabel.textContent = "日給";
+    els.eventCompensationRate.step = "1000";
+    els.eventCompensationRate.placeholder = "30000";
+    return;
+  }
+  if (type === "project") {
+    els.eventCompensationRateLabel.textContent = "一案件単価";
+    els.eventCompensationRate.step = "1000";
+    els.eventCompensationRate.placeholder = "100000";
+    return;
+  }
+  els.eventCompensationRateLabel.textContent = "単価";
+  els.eventCompensationRate.step = "100";
+  els.eventCompensationRate.placeholder = "0";
+  els.eventCompensationRate.value = "";
+}
+
+function formatCompensationLabel(event) {
+  const type = event.compensationType || "none";
+  const rate = Number(event.compensationRate || 0);
+  if (type === "hourly") return `時給 ${formatCurrency(rate)}`;
+  if (type === "daily") return `日給 ${formatCurrency(rate)}`;
+  if (type === "project") return `一案件単価 ${formatCurrency(rate)}`;
+  return "報酬なし";
+}
+
+function eventsForCurrentMonth(events) {
+  const start = new Date(state.currentDate.getFullYear(), state.currentDate.getMonth(), 1);
+  const end = new Date(state.currentDate.getFullYear(), state.currentDate.getMonth() + 1, 0, 23, 59, 59);
+  return events.filter((event) => new Date(event.startAt) <= end && new Date(event.endAt) >= start);
+}
+
+function calculateEventCompensation(event, currentMonthDate) {
+  const type = event.compensationType || "none";
+  const rate = Number(event.compensationRate || 0);
+  if (type === "none" || rate <= 0) return { type: "none", units: 0, amount: 0 };
+  if (type === "hourly") {
+    const hours = durationMinutes(event) / 60;
+    return { type, units: hours, amount: hours * rate * 1.1 };
+  }
+  if (type === "daily") {
+    const days = eventDaysInMonth(event, currentMonthDate);
+    return { type, units: days, amount: days * rate * 1.1 };
+  }
+  return { type: "project", units: 1, amount: rate };
+}
+
+function eventDaysInMonth(event, currentMonthDate) {
+  const start = startOfDay(new Date(event.startAt));
+  const end = startOfDay(new Date(event.endAt));
+  const monthStart = new Date(currentMonthDate.getFullYear(), currentMonthDate.getMonth(), 1);
+  const monthEnd = new Date(currentMonthDate.getFullYear(), currentMonthDate.getMonth() + 1, 0);
+  const effectiveStart = start > monthStart ? start : monthStart;
+  const effectiveEnd = end < monthEnd ? end : monthEnd;
+  return Math.max(1, Math.floor((effectiveEnd - effectiveStart) / 86400000) + 1);
 }
 
 function getPriorityTheme(priority) {
@@ -1329,9 +1368,24 @@ function createEventRecord(data) {
     reminderMinutes: data.reminderMinutes ?? null,
     repeat: data.repeat || "none",
     isCompleted: Boolean(data.isCompleted),
+    compensationType: data.compensationType || "hourly",
+    compensationRate: Number(data.compensationRate || 4500),
     meetingUrl: data.meetingUrl || "",
     description: data.description || "",
   };
+}
+
+function normalizeEventRecord(event) {
+  const normalized = {
+    ...event,
+    compensationType: event.compensationType || "hourly",
+    compensationRate: Number(event.compensationRate || 4500),
+  };
+  if (!normalized.compensationType || normalized.compensationType === "none") {
+    normalized.compensationType = "hourly";
+    normalized.compensationRate = 4500;
+  }
+  return normalized;
 }
 
 function detectMeetingProvider(url) {

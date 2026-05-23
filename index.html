@@ -30,18 +30,6 @@
           <div class="panel-header">
             <h2>報酬</h2>
           </div>
-          <label class="field compact-field">
-            <span>計算方法</span>
-            <select id="rewardModeSelect">
-              <option value="hourly">① 時給</option>
-              <option value="daily">② 日給</option>
-              <option value="project">③ 一案件単価</option>
-            </select>
-          </label>
-          <label class="field compact-field" id="rewardRateField">
-            <span id="rewardRateLabel">時給</span>
-            <input id="rewardRateInput" type="number" min="0" step="100" />
-          </label>
           <p id="rewardAmountLabel" class="time-label"></p>
           <p id="rewardFormulaLabel" class="muted"></p>
         </section>
@@ -194,6 +182,19 @@
               <option value="false">未完了</option>
               <option value="true">完了</option>
             </select>
+          </label>
+          <label class="field">
+            <span>報酬設定</span>
+            <select id="eventCompensationType">
+              <option value="none">報酬なし</option>
+              <option value="hourly">① 時給</option>
+              <option value="daily">② 日給</option>
+              <option value="project">③ 一案件単価</option>
+            </select>
+          </label>
+          <label class="field">
+            <span id="eventCompensationRateLabel">単価</span>
+            <input id="eventCompensationRate" type="number" min="0" step="100" placeholder="0" />
           </label>
           <label class="field field-span-2">
             <span>ミーティングURL</span>
