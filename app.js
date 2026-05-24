@@ -21,6 +21,13 @@ const state = {
   selectedCategoryIds: [],
   categories: [],
   events: [],
+  weather: {
+    status: "idle",
+    locationLabel: "東京",
+    coords: { latitude: 35.6764, longitude: 139.65 },
+    tomorrow: null,
+  },
+  eventWeather: {},
 };
 
 const els = {};
@@ -34,7 +41,9 @@ document.addEventListener("DOMContentLoaded", () => {
   seedDemoEvents();
   renderAll();
   updateClock();
+  loadWeather();
   setInterval(updateClock, 1000);
+  setInterval(loadWeather, 60 * 60 * 1000);
 });
 
 function cacheElements() {
@@ -45,6 +54,7 @@ function cacheElements() {
     "rewardAmountLabel",
     "rewardFormulaLabel",
     "todayEventsList",
+    "tomorrowWeatherCard",
     "nextEventCard",
     "categoryFilterList",
     "searchInput",
@@ -247,6 +257,7 @@ function renderAll() {
   renderYearView();
   renderTodayPanel();
   renderRewardPanel();
+  renderTomorrowWeather();
   persistState();
 }
 
@@ -591,32 +602,33 @@ function renderTodayPanel() {
         <strong>${escapeHtml(event.title)}</strong>
         <div>${formatEventTime(event)}</div>
         <div class="muted">${escapeHtml(category.name)} ${event.location ? `・${escapeHtml(event.location)}` : ""}</div>
+        <div class="muted" id="todayEventWeather-${event.id}">${escapeHtml(getEventWeatherText(event, null, true))}</div>
       `;
       item.addEventListener("click", () => openDetailsModal(event.id));
       els.todayEventsList.appendChild(item);
+      loadEventWeather(event, `todayEventWeather-${event.id}`);
     });
   }
 
-  const upcoming = sortedEvents(
-    filteredEvents().filter((event) => new Date(event.endAt) >= new Date() && !event.isCompleted)
-  )[0];
-  if (!upcoming) {
+  const nextDayEvent = findNextDayEvent();
+  if (!nextDayEvent) {
     els.nextEventCard.textContent = "予定はありません";
     els.nextEventCard.classList.add("empty-state");
     return;
   }
 
   els.nextEventCard.classList.remove("empty-state");
-  const diff = Math.max(0, Math.round((new Date(upcoming.startAt) - new Date()) / 60000));
-  const category = getCategory(upcoming.categoryId);
-  const priorityTheme = getPriorityTheme(upcoming.priority);
+  const category = getCategory(nextDayEvent.categoryId);
+  const priorityTheme = getPriorityTheme(nextDayEvent.priority);
   els.nextEventCard.style.background = priorityTheme.soft;
   els.nextEventCard.style.borderColor = priorityTheme.solid;
   els.nextEventCard.innerHTML = `
-    <strong>${escapeHtml(upcoming.title)}</strong>
-    <div>${formatLongDate(new Date(upcoming.startAt))}</div>
-    <div class="muted">${diff}分後 / ${escapeHtml(category.name)}</div>
+    <strong>${escapeHtml(nextDayEvent.title)}</strong>
+    <div>${formatLongDate(new Date(nextDayEvent.startAt))}</div>
+    <div class="muted">${escapeHtml(category.name)} ${nextDayEvent.location ? ` / ${escapeHtml(nextDayEvent.location)}` : ""}</div>
+    <div class="muted" id="nextEventWeatherLabel">${escapeHtml(getNextEventWeatherText(nextDayEvent))}</div>
   `;
+  loadNextEventWeather(nextDayEvent);
 }
 
 function renderRewardPanel() {
@@ -642,6 +654,17 @@ function renderRewardPanel() {
   if (summary.daily > 0) parts.push(`日給 ${summary.daily}日`);
   if (summary.project > 0) parts.push(`案件 ${summary.project}件`);
   els.rewardFormulaLabel.textContent = parts.length > 0 ? `当月合計: ${parts.join(" / ")}` : "報酬対象の予定はありません";
+}
+
+function findNextDayEvent() {
+  const today = startOfDay(new Date());
+  const events = sortedEvents(filteredEvents().filter((event) => !event.isCompleted));
+  for (let offset = 1; offset <= 365; offset += 1) {
+    const targetDate = addDays(today, offset);
+    const event = events.find((item) => occursOnDate(item, targetDate));
+    if (event) return event;
+  }
+  return null;
 }
 
 function renderCategoryManager() {
@@ -676,8 +699,8 @@ function handleEventSubmit(event) {
   const payload = {
     id: els.eventId.value || crypto.randomUUID(),
     title: els.eventTitle.value.trim(),
-    startAt: new Date(els.eventStart.value).toISOString(),
-    endAt: new Date(els.eventEnd.value).toISOString(),
+    startAt: els.eventStart.value,
+    endAt: els.eventEnd.value,
     isAllDay: els.eventAllDay.checked,
     categoryId: els.eventCategory.value,
     priority: Number(els.eventPriority.value),
@@ -1052,6 +1075,246 @@ function updateClock() {
   if (state.view === "day") renderDayView();
 }
 
+function loadWeather() {
+  state.weather.status = "loading";
+  renderTomorrowWeather();
+
+  const fallback = { latitude: 35.6764, longitude: 139.65, label: "東京" };
+  if (!navigator.geolocation) {
+    fetchTomorrowWeather(fallback);
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      state.weather.coords = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      };
+      fetchTomorrowWeather({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        label: "現在地",
+      });
+    },
+    () => fetchTomorrowWeather(fallback),
+    { timeout: 5000, maximumAge: 30 * 60 * 1000 }
+  );
+}
+
+async function fetchTomorrowWeather({ latitude, longitude, label }) {
+  try {
+    const url = new URL("https://api.open-meteo.com/v1/forecast");
+    url.searchParams.set("latitude", String(latitude));
+    url.searchParams.set("longitude", String(longitude));
+    url.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min");
+    url.searchParams.set("forecast_days", "2");
+    url.searchParams.set("timezone", "auto");
+
+    const response = await fetch(url.toString());
+    if (!response.ok) throw new Error(`weather ${response.status}`);
+    const data = await response.json();
+    state.weather = {
+      status: "ready",
+      locationLabel: label,
+      coords: { latitude, longitude },
+      tomorrow: {
+        date: data.daily?.time?.[1] || null,
+        weatherCode: data.daily?.weather_code?.[1] ?? null,
+        tempMax: data.daily?.temperature_2m_max?.[1] ?? null,
+        tempMin: data.daily?.temperature_2m_min?.[1] ?? null,
+      },
+    };
+  } catch (_error) {
+    state.weather = {
+      status: "error",
+      locationLabel: label,
+      coords: { latitude, longitude },
+      tomorrow: null,
+    };
+  }
+  renderTomorrowWeather();
+}
+
+function loadNextEventWeather(event) {
+  loadEventWeather(event, "nextEventWeatherLabel");
+}
+
+function loadEventWeather(event, targetId) {
+  const location = (event.location || "").trim();
+  const dateKey = toDateKey(new Date(event.startAt));
+  const requestKey = `${targetId}__${location}__${dateKey}`;
+
+  if (!location || isRemoteLocation(location)) {
+    state.eventWeather[targetId] = {
+      status: "unavailable",
+      key: requestKey,
+      locationLabel: location,
+      forecast: null,
+    };
+    updateWeatherLabel(targetId, getEventWeatherText(event, state.eventWeather[targetId]));
+    return;
+  }
+
+  const current = state.eventWeather[targetId];
+  if (current?.key === requestKey && ["ready", "loading"].includes(current.status)) {
+    updateWeatherLabel(targetId, getEventWeatherText(event, current));
+    return;
+  }
+
+  state.eventWeather[targetId] = {
+    status: "loading",
+    key: requestKey,
+    locationLabel: location,
+    forecast: null,
+  };
+  updateWeatherLabel(targetId, getEventWeatherText(event, state.eventWeather[targetId]));
+  fetchForecastForLocation(location, new Date(event.startAt), requestKey, targetId, event);
+}
+
+async function fetchForecastForLocation(location, targetDate, requestKey, targetId, event) {
+  try {
+    let result = await geocodeJapaneseLocation(location);
+    if (!result) {
+      result = {
+        name: state.weather.locationLabel || "現在地",
+        latitude: state.weather.coords.latitude,
+        longitude: state.weather.coords.longitude,
+      };
+    }
+
+    const forecast = new URL("https://api.open-meteo.com/v1/forecast");
+    forecast.searchParams.set("latitude", String(result.latitude));
+    forecast.searchParams.set("longitude", String(result.longitude));
+    forecast.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min");
+    forecast.searchParams.set("forecast_days", "16");
+    forecast.searchParams.set("timezone", "auto");
+
+    const weatherResponse = await fetch(forecast.toString());
+    if (!weatherResponse.ok) throw new Error(`forecast ${weatherResponse.status}`);
+    const weatherData = await weatherResponse.json();
+    const targetKey = toDateKey(targetDate);
+    const index = (weatherData.daily?.time || []).findIndex((item) => item === targetKey);
+    if (index < 0) throw new Error("target date out of range");
+
+    if (state.eventWeather[targetId]?.key !== requestKey) return;
+    state.eventWeather[targetId] = {
+      status: "ready",
+      key: requestKey,
+      locationLabel: result.name || location,
+      forecast: {
+        date: weatherData.daily.time[index],
+        weatherCode: weatherData.daily.weather_code[index],
+        tempMax: weatherData.daily.temperature_2m_max[index],
+        tempMin: weatherData.daily.temperature_2m_min[index],
+      },
+    };
+  } catch (_error) {
+    if (state.eventWeather[targetId]?.key !== requestKey) return;
+    state.eventWeather[targetId] = {
+      status: "error",
+      key: requestKey,
+      locationLabel: location,
+      forecast: null,
+    };
+  }
+  updateWeatherLabel(targetId, getEventWeatherText(event, state.eventWeather[targetId]));
+}
+
+async function geocodeJapaneseLocation(location) {
+  const normalized = normalizeLocationQuery(location);
+  const candidates = [
+    normalized,
+    `${normalized}駅`,
+    `${normalized} 東京都`,
+    `${normalized}駅 東京都`,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const result = await searchGeocoding(candidate, "JP");
+    if (result) return result;
+  }
+
+  for (const candidate of candidates) {
+    const result = await searchGeocoding(candidate);
+    if (result) return result;
+  }
+
+  return null;
+}
+
+async function searchGeocoding(name, countryCode) {
+  const geo = new URL("https://geocoding-api.open-meteo.com/v1/search");
+  geo.searchParams.set("name", name);
+  geo.searchParams.set("count", "1");
+  geo.searchParams.set("language", "ja");
+  geo.searchParams.set("format", "json");
+  if (countryCode) {
+    geo.searchParams.set("countryCode", countryCode);
+  }
+
+  const geoResponse = await fetch(geo.toString());
+  if (!geoResponse.ok) throw new Error(`geo ${geoResponse.status}`);
+  const geoData = await geoResponse.json();
+  return geoData.results?.[0] || null;
+}
+
+function updateNextEventWeatherLabel() {
+  const label = document.getElementById("nextEventWeatherLabel");
+  if (!label) return;
+  label.textContent = getNextEventWeatherText();
+}
+
+function updateWeatherLabel(targetId, text) {
+  const label = document.getElementById(targetId);
+  if (!label) return;
+  label.textContent = text;
+}
+
+function getNextEventWeatherText(event) {
+  return getEventWeatherText(event, state.eventWeather.nextEventWeatherLabel, false);
+}
+
+function getEventWeatherText(event, weatherState, compact = false) {
+  if (event) {
+    const location = (event.location || "").trim();
+    if (!location) return compact ? "天気: 場所未設定" : "場所の天気: 場所未設定";
+    if (isRemoteLocation(location)) return compact ? "天気: オンラインのため対象外" : "場所の天気: オンラインのため対象外";
+  }
+
+  const data = weatherState || { status: "idle", locationLabel: "", forecast: null };
+  if (data.status === "loading" || data.status === "idle") return compact ? "天気: 取得中..." : "場所の天気: 取得中...";
+  if (data.status === "unavailable") return compact ? "天気: オンラインのため対象外" : "場所の天気: オンラインのため対象外";
+  if (data.status === "error" || !data.forecast) return compact ? "天気: 取得できませんでした" : "場所の天気: 取得できませんでした";
+  const info = getWeatherCodeInfo(data.forecast.weatherCode);
+  return compact
+    ? `天気: ${data.locationLabel} ${info.icon}${info.label} ${formatTemperature(data.forecast.tempMax)} / ${formatTemperature(data.forecast.tempMin)}`
+    : `場所の天気: ${data.locationLabel} ${info.icon}${info.label} ${formatTemperature(data.forecast.tempMax)} / ${formatTemperature(data.forecast.tempMin)}`;
+}
+
+function renderTomorrowWeather() {
+  if (state.weather.status === "idle" || state.weather.status === "loading") {
+    els.tomorrowWeatherCard.textContent = "取得中...";
+    els.tomorrowWeatherCard.classList.add("empty-state");
+    return;
+  }
+
+  if (state.weather.status === "error" || !state.weather.tomorrow) {
+    els.tomorrowWeatherCard.textContent = "天気を取得できませんでした";
+    els.tomorrowWeatherCard.classList.add("empty-state");
+    return;
+  }
+
+  const weather = state.weather.tomorrow;
+  const info = getWeatherCodeInfo(weather.weatherCode);
+  els.tomorrowWeatherCard.classList.remove("empty-state");
+  els.tomorrowWeatherCard.innerHTML = `
+    <strong>${info.icon} ${info.label}</strong>
+    <div>${state.weather.locationLabel} / ${formatWeatherDate(weather.date)}</div>
+    <div class="muted">最高 ${formatTemperature(weather.tempMax)} / 最低 ${formatTemperature(weather.tempMin)}</div>
+  `;
+}
+
 function drawCurrentTimeLine(columns, startDate, mode) {
   const now = new Date();
   if (mode === "week") {
@@ -1114,6 +1377,57 @@ function formatCurrency(amount) {
     currency: "JPY",
     maximumFractionDigits: 0,
   }).format(Math.round(amount));
+}
+
+function formatTemperature(value) {
+  return value == null ? "--" : `${Math.round(value)}°C`;
+}
+
+function formatWeatherDate(value) {
+  if (!value) return "明日";
+  const date = new Date(value);
+  return date.toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
+}
+
+function getWeatherCodeInfo(code) {
+  const map = {
+    0: { label: "快晴", icon: "☀️" },
+    1: { label: "晴れ", icon: "🌤️" },
+    2: { label: "晴れ時々くもり", icon: "⛅" },
+    3: { label: "くもり", icon: "☁️" },
+    45: { label: "霧", icon: "🌫️" },
+    48: { label: "濃霧", icon: "🌫️" },
+    51: { label: "弱い霧雨", icon: "🌦️" },
+    53: { label: "霧雨", icon: "🌦️" },
+    55: { label: "強い霧雨", icon: "🌧️" },
+    61: { label: "弱い雨", icon: "🌦️" },
+    63: { label: "雨", icon: "🌧️" },
+    65: { label: "強い雨", icon: "🌧️" },
+    71: { label: "弱い雪", icon: "🌨️" },
+    73: { label: "雪", icon: "🌨️" },
+    75: { label: "強い雪", icon: "❄️" },
+    80: { label: "にわか雨", icon: "🌦️" },
+    81: { label: "強いにわか雨", icon: "🌧️" },
+    82: { label: "激しいにわか雨", icon: "⛈️" },
+    95: { label: "雷雨", icon: "⛈️" },
+    96: { label: "雷雨とひょう", icon: "⛈️" },
+    99: { label: "激しい雷雨とひょう", icon: "⛈️" },
+  };
+  return map[code] || { label: "天気不明", icon: "🌡️" };
+}
+
+function isRemoteLocation(location) {
+  const value = String(location || "").toLowerCase();
+  const keywords = ["オンライン", "online", "zoom", "meet", "teams", "web", "remote"];
+  return keywords.some((keyword) => value.includes(keyword));
+}
+
+function normalizeLocationQuery(location) {
+  return String(location || "")
+    .replace(/\(.*?\)|（.*?）/g, "")
+    .replace(/本社|支店|オフィス|事務所|会議室|店舗|センター/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function syncCompensationFieldState() {
@@ -1359,8 +1673,8 @@ function createEventRecord(data) {
   return {
     id: crypto.randomUUID(),
     title: data.title,
-    startAt: new Date(data.startAt).toISOString(),
-    endAt: new Date(data.endAt).toISOString(),
+    startAt: toStoredDateTime(data.startAt),
+    endAt: toStoredDateTime(data.endAt),
     isAllDay: Boolean(data.isAllDay),
     categoryId: data.categoryId,
     priority: data.priority || 3,
@@ -1378,6 +1692,8 @@ function createEventRecord(data) {
 function normalizeEventRecord(event) {
   const normalized = {
     ...event,
+    startAt: toStoredDateTime(event.startAt),
+    endAt: toStoredDateTime(event.endAt),
     compensationType: event.compensationType || "hourly",
     compensationRate: Number(event.compensationRate || 4500),
   };
@@ -1488,6 +1804,14 @@ function isSameDay(a, b) {
 function toDatetimeLocal(date) {
   const pad = (value) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function toStoredDateTime(value) {
+  if (!value) return "";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) {
+    return value;
+  }
+  return toDatetimeLocal(new Date(value));
 }
 
 function escapeHtml(value) {
